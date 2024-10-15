@@ -19,7 +19,7 @@
     "platforms": "atmelavr, espressif8266, espressif32, raspberrypi",
     "repository": {
         "type": "git",
-        "url": "https://github.com/subhamgupta28/automata.git"
+        "url": "https://github.com/subhamgupta28/ArduinoAutomata.git"
     },
     "version": "1.0.0"
 }
