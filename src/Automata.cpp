@@ -2,8 +2,10 @@
 
 Automata *Automata::instance = nullptr;
 
-Automata::Automata(String deviceName)
-    :deviceName(deviceName), stomper(webSocket, HOST, PORT, "/ws/", true)
+Automata::Automata(String deviceName, const char* HOST, int PORT)
+    :deviceName(deviceName), HOST(HOST), PORT(PORT), 
+      stomper(webSocket, HOST, PORT, "/ws/", true), 
+      _handleAction(nullptr), _handleDelay(nullptr)
 {
     instance = this;
 }

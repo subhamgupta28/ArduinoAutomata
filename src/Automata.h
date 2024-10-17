@@ -10,7 +10,7 @@
 #include "StompClient.h"
 #include <Preferences.h>
 #include <ESPmDNS.h>
-#include "config.h"
+// #include "config.h"
 #include <vector>
 
 class Automata;
@@ -41,7 +41,7 @@ class Automata
 {
 public:
     static Automata *instance;
-    Automata(String deviceName);
+    Automata(String deviceName, const char* HOST, int PORT);
     void begin();
     void loop();
     void registerDevice();
@@ -81,6 +81,8 @@ private:
     HTTPClient http;
     Preferences preferences;
     String deviceName;
+    const char* HOST;
+    int PORT;
 
     String config = "";
     String deviceId = "112";
