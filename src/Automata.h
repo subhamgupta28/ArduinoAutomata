@@ -41,7 +41,7 @@ class Automata
 {
 public:
     static Automata *instance;
-    Automata();
+    Automata(String deviceName);
     void begin();
     void loop();
     void registerDevice();
@@ -80,9 +80,10 @@ private:
     WiFiMulti wifiMulti;
     HTTPClient http;
     Preferences preferences;
+    String deviceName;
 
     String config = "";
-    String deviceId = "1";
+    String deviceId = "112";
     String macAddr = "";
     bool isDeviceRegistered = false;
     unsigned long previousMillis = 0;

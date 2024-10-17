@@ -2,8 +2,8 @@
 
 Automata *Automata::instance = nullptr;
 
-Automata::Automata()
-    : stomper(webSocket, HOST, PORT, "/ws/", true)
+Automata::Automata(String deviceName)
+    :deviceName(deviceName), stomper(webSocket, HOST, PORT, "/ws/", true)
 {
     instance = this;
 }
@@ -156,7 +156,7 @@ void Automata::registerDevice()
     Serial.println("Registering Device");
 
     JsonDocument doc;
-    doc["name"] = DEVICE_NAME;
+    doc["name"] = deviceName;
     doc["deviceId"] = deviceId;
     doc["type"] = "sensor";
     doc["updateInterval"] = d;
