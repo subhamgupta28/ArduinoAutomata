@@ -93,9 +93,15 @@ void Automata::keepWiFiAlive()
 
 void Automata::loop()
 {
+    unsigned long currentMillis = millis();
     if (wifiMulti.run() == WL_CONNECTED)
     {
         webSocket.loop();
+        if (currentMillis - previousMillis > getDelay())
+        {
+            _handleDelay();
+            previousMillis = currentMillis;
+        }
     }
 }
 
@@ -130,17 +136,18 @@ String Automata::send(JsonDocument doc)
         }
         escapedString += output.charAt(i);
     }
-    Serial.println("Data sent: ");
-    Serial.print(output);
+    // Serial.println("Data sent: ");
+    // Serial.print(output);
     return escapedString;
 }
-void Automata::addAttribute(String key, String displayName, String unit, String type)
+void Automata::addAttribute(String key, String displayName, String unit, String type, JsonDocument extras)
 {
     Attribute atb;
     atb.displayName = displayName;
     atb.key = key;
     atb.unit = unit;
     atb.type = type;
+    atb.extras = extras;
     attributeList.push_back(atb);
 }
 
@@ -169,6 +176,7 @@ void Automata::registerDevice()
         attr1["key"] = attribute.key;
         attr1["units"] = attribute.unit;
         attr1["type"] = attribute.type;
+        attr1["extras"] = attribute.extras;
         attr1["valueDataType"] = "String";
     }
 
@@ -253,6 +261,11 @@ void Automata::subscribe(const Stomp::StompCommand cmd)
     char queue[queueStr.length() + 1];
     strcpy(queue, queueStr.c_str());
     stomper.subscribe(queue, Stomp::CLIENT, freeHandleUpdate);
+    String actionStr = "/topic/action/" + deviceId;
+    char action[actionStr.length() + 1];
+    strcpy(action, actionStr.c_str());
+
+    stomper.subscribe(action, Stomp::CLIENT, freeHandleAction);
 }
 void Automata::error(const Stomp::StompCommand cmd)
 {
@@ -260,19 +273,8 @@ void Automata::error(const Stomp::StompCommand cmd)
 }
 Stomp::Stomp_Ack_t Automata::handleUpdate(const Stomp::StompCommand cmd)
 {
-    JsonDocument resp;
-    Serial.println("Update Received");
     String res = String(cmd.body);
-    res.trim();
-    res.replace("\\", "");
-
-    DeserializationError err = deserializeJson(resp, res);
-    if (err)
-    {
-        Serial.print(F("deserializeJson() failed: "));
-        Serial.println(err.c_str());
-        Serial.println(res);
-    }
+    JsonDocument resp = parseString(res);
     String output;
     serializeJson(resp, output);
     Serial.println(output);
@@ -301,4 +303,46 @@ void freeError(Stomp::StompCommand cmd)
 Stomp::Stomp_Ack_t freeHandleUpdate(Stomp::StompCommand cmd)
 {
     return Automata::instance->handleUpdate(cmd);
+}
+
+Stomp::Stomp_Ack_t freeHandleAction(Stomp::StompCommand cmd)
+{
+    return Automata::instance->handleAction(cmd);
+}
+
+JsonDocument Automata::parseString(String str)
+{
+    JsonDocument resp;
+    Serial.println("Action Received");
+
+    str.trim();
+    str.replace("\\", "");
+
+    DeserializationError err = deserializeJson(resp, str);
+    if (err)
+    {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(err.c_str());
+        Serial.println(str);
+    }
+    return resp;
+}
+
+Stomp::Stomp_Ack_t Automata::handleAction(const Stomp::StompCommand cmd)
+{
+    String res = String(cmd.body);
+    JsonDocument resp = parseString(res);
+    Action action;
+
+    action.data = resp;
+    _handleAction(action);
+
+    return Stomp::CONTINUE;
+}
+void Automata::onActionReceived(HandleAction cb)
+{
+    _handleAction = cb;
+}
+void Automata::delayedUpdate(HandleDelay hd){
+    _handleDelay = hd;
 }
