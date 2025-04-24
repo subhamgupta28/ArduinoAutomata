@@ -17,7 +17,7 @@
 
 #include "Stomp.h"
 #include "StompCommandParser.h"
-#include <WebsocketsClient.h>
+#include <WebSocketsClient.h>
 
 namespace Stomp
 {
