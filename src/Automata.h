@@ -6,7 +6,7 @@
 #include <WiFi.h>
 #include <WiFiMulti.h>
 #include <HTTPClient.h>
-#include <WebsocketsClient.h>
+#include <WebSocketsClient.h>
 #include "StompClient.h"
 #include <Preferences.h>
 #include <ESPmDNS.h>
