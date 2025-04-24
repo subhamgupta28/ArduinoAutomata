@@ -2,19 +2,50 @@
 
 Automata *Automata::instance = nullptr;
 
-Automata::Automata(String deviceName, const char* HOST, int PORT)
-    :deviceName(deviceName), HOST(HOST), PORT(PORT), 
-      stomper(webSocket, HOST, PORT, "/ws/", true), 
-      _handleAction(nullptr), _handleDelay(nullptr)
+Automata::Automata(String deviceName, const char *HOST, int PORT)
+    : deviceName(deviceName), HOST(HOST), PORT(PORT),
+      stomper(webSocket, HOST, PORT, "/ws/", true),
+      _handleAction(nullptr), _handleDelay(nullptr), server(80), events("/events")
 {
     instance = this;
 }
 
+String Automata::convertToLowerAndUnderscore(String input)
+{
+    String output = "";
+
+    for (int i = 0; i < input.length(); i++)
+    {
+        char ch = input.charAt(i);
+        if (ch == ' ')
+        {
+            output += '_';
+        }
+        else
+        {
+            output += toLowerCase(ch);
+        }
+    }
+
+    return output;
+}
+
+// Helper function to convert a character to lowercase
+char Automata::toLowerCase(char c)
+{
+    if (c >= 'A' && c <= 'Z')
+    {
+        return c + 32;
+    }
+    return c;
+}
+
 void Automata::begin()
 {
-    Serial.begin(115200);
+    // Serial.begin(115200);
     WiFi.mode(WIFI_STA);
-
+    WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
+    WiFi.setHostname(convertToLowerAndUnderscore(deviceName).c_str());
     Serial.println(preferences.begin("my-app", false));
 
     // preferences.clear();
@@ -22,19 +53,43 @@ void Automata::begin()
     wifiMulti.addAP("JioFiber-x5hnq", "12341234");
     wifiMulti.addAP("Net2.4", "12345678");
     wifiMulti.addAP("wifi_NET", "444555666");
-
+    // wifiMulti.addAP("Akhil_E504", "504504504");
     macAddr = getMacAddress();
 
     getConfig();
     xTaskCreatePinnedToCore([](void *params)
                             { static_cast<Automata *>(params)->keepWiFiAlive(); },
-                            "keepWiFiAlive", 8000, this, 1, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+                            "keepWiFiAlive", 4096, this, 1, NULL, CONFIG_ARDUINO_RUNNING_CORE);
     Serial.println("waiting");
     while (!WiFi.isConnected())
     {
     }
-    ws();
+    // ws();
     // registerDevice();
+}
+
+void Automata::handleWebServer()
+{
+    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
+              { request->send(200, "text/html", index_html); });
+    server.on("/restart", HTTP_GET, [](AsyncWebServerRequest *request)
+              { 
+            
+                ESP.restart();
+                request->send(200, "text/html", "ok"); });
+    events.onConnect([](AsyncEventSourceClient *client)
+                     {
+                         if (client->lastId())
+                         {
+                             Serial.printf("Client reconnected! Last message ID that it got is: %u\n", client->lastId());
+                         } });
+    server.addHandler(&events);
+    server.begin();
+}
+
+Preferences Automata::getPreferences()
+{
+    return preferences;
 }
 
 String Automata::getMacAddress()
@@ -60,6 +115,10 @@ void Automata::keepWiFiAlive()
 {
     for (;;)
     {
+        if (!webSocket.isConnected())
+        {
+            ws();
+        }
         if (WiFi.status() == WL_CONNECTED)
         {
             vTaskDelay(10000 / portTICK_PERIOD_MS);
@@ -73,7 +132,10 @@ void Automata::keepWiFiAlive()
         {
             // Serial.print(".");
         }
-
+        if (!MDNS.begin(convertToLowerAndUnderscore(deviceName)))
+        {
+            Serial.println("Error setting up MDNS responder!");
+        }
         if (WiFi.status() != WL_CONNECTED)
         {
             Serial.println("WiFi FAILED");
@@ -81,17 +143,24 @@ void Automata::keepWiFiAlive()
             continue;
         }
 
-        if (!MDNS.begin("automata_mmw"))
+        if (!webSocket.isConnected())
         {
-            Serial.println("Error setting up MDNS responder!");
+            ws();
         }
 
+        
+        ws();
         configTime(5.5 * 3600, 0, ntpServer);
+        setOTA();
         Serial.println("WiFi connected");
         Serial.println("IP address: ");
         Serial.println(WiFi.localIP());
+        handleWebServer();
     }
 }
+
+long regTime = millis();
+long regWait = 30000;
 
 void Automata::loop()
 {
@@ -99,17 +168,63 @@ void Automata::loop()
     if (wifiMulti.run() == WL_CONNECTED)
     {
         webSocket.loop();
+        // if (!webSocket.isConnected())
+        // {
+        //     ws();
+        // }
+        ArduinoOTA.handle();
         if (currentMillis - previousMillis > getDelay())
         {
             _handleDelay();
             previousMillis = currentMillis;
         }
+
+        if (!isDeviceRegistered && (currentMillis - regTime) > regWait)
+        {
+            registerDevice();
+            regTime = currentMillis;
+        }
     }
 }
 
-void Automata::sendLive(JsonDocument doc)
+void Automata::setOTA()
 {
-    stomper.sendMessage("/app/sendLiveData", send(doc));
+    ArduinoOTA.setHostname(convertToLowerAndUnderscore(deviceName).c_str());
+    ArduinoOTA.setPassword("");
+    ArduinoOTA.onStart([]()
+                       {
+      String type;
+      if (ArduinoOTA.getCommand() == U_FLASH)
+        type = "sketch";
+      else  // U_SPIFFS
+        type = "filesystem";
+
+      // NOTE: if updating SPIFFS this would be the place to unmount SPIFFS using SPIFFS.end()
+      Serial.println("Start updating " + type); })
+        .onEnd([]()
+               { Serial.println("\nEnd"); })
+        .onProgress([](unsigned int progress, unsigned int total)
+                    { Serial.printf("Progress: %u%%\r", (progress / (total / 100))); })
+        .onError([](ota_error_t error)
+                 {
+      Serial.printf("Error[%u]: ", error);
+      if (error == OTA_AUTH_ERROR) Serial.println("Auth Failed");
+      else if (error == OTA_BEGIN_ERROR) Serial.println("Begin Failed");
+      else if (error == OTA_CONNECT_ERROR) Serial.println("Connect Failed");
+      else if (error == OTA_RECEIVE_ERROR) Serial.println("Receive Failed");
+      else if (error == OTA_END_ERROR) Serial.println("End Failed"); });
+
+    ArduinoOTA.begin();
+
+    Serial.println("Ready");
+}
+
+void Automata::sendLive(JsonDocument data)
+{
+    stomper.sendMessage("/app/sendLiveData", send(data));
+    String json;
+    serializeJson(data, json);
+    events.send(String(json).c_str(), "live", millis());
 }
 
 void Automata::sendData(JsonDocument doc)
@@ -163,6 +278,63 @@ void Automata::registerDevice()
     doc["type"] = "sensor";
     doc["updateInterval"] = d;
     doc["status"] = "ONLINE";
+    doc["host"] = String(WiFi.getHostname());
+    doc["macAddr"] = macAddr;
+    doc["reboot"] = false;
+    doc["sleep"] = false;
+    doc["accessUrl"] = "http://" + WiFi.localIP().toString();
+
+    JsonArray attributes = doc["attributes"].to<JsonArray>();
+
+    for (auto &attribute : attributeList)
+    {
+        JsonObject attr1 = attributes.createNestedObject();
+        attr1["value"] = "";
+        attr1["displayName"] = attribute.displayName;
+        attr1["key"] = attribute.key;
+        attr1["units"] = attribute.unit;
+        attr1["type"] = attribute.type;
+        attr1["extras"] = attribute.extras;
+        attr1["visible"] = true;
+        attr1["valueDataType"] = "String";
+    }
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+
+    int retryCount = 0;
+    while (retryCount < 5)
+    {
+        String res = sendHttp(jsonString, "register");
+        if (res != "")
+        {
+            isDeviceRegistered = true;
+            JsonDocument resp;
+            deserializeJson(resp, res);
+            deviceId = resp["id"].as<String>();
+            preferences.putString("deviceId", deviceId);
+            Serial.println("Device Registered");
+            Serial.println(res);
+            return;
+        }
+        Serial.println("Device Registration failed. Retrying in 5 sec...");
+        delay(5000);
+        retryCount++;
+    }
+
+    Serial.println("Device registration failed after multiple attempts. Rebooting...");
+}
+
+void Automata::registerDeviceOld()
+{
+    Serial.println("Registering Device");
+
+    JsonDocument doc;
+    doc["name"] = deviceName;
+    doc["deviceId"] = deviceId;
+    doc["type"] = "sensor";
+    doc["updateInterval"] = d;
+    doc["status"] = "ONLINE";
     doc["macAddr"] = macAddr;
     doc["reboot"] = false;
     doc["sleep"] = false;
@@ -179,6 +351,7 @@ void Automata::registerDevice()
         attr1["units"] = attribute.unit;
         attr1["type"] = attribute.type;
         attr1["extras"] = attribute.extras;
+        attr1["visible"] = true;
         attr1["valueDataType"] = "String";
     }
 
@@ -272,6 +445,7 @@ void Automata::subscribe(const Stomp::StompCommand cmd)
 void Automata::error(const Stomp::StompCommand cmd)
 {
     Serial.println("ERROR: " + cmd.body);
+    // ESP.restart();
 }
 Stomp::Stomp_Ack_t Automata::handleUpdate(const Stomp::StompCommand cmd)
 {
@@ -335,16 +509,38 @@ Stomp::Stomp_Ack_t Automata::handleAction(const Stomp::StompCommand cmd)
     String res = String(cmd.body);
     JsonDocument resp = parseString(res);
     Action action;
-
     action.data = resp;
-    _handleAction(action);
 
+    _handleAction(action);
+    bool p1 = action.data["reboot"];
+    JsonDocument doc;
+
+    if (p1)
+    {
+        doc["command"] = "reboot";
+    }
+    else
+    {
+        doc["command"] = resp["key"];
+    }
+
+    doc["key"] = "actionAck";
+    doc["actionAck"] = "Success";
+    stomper.sendMessage("/app/ackAction", send(doc));
+
+    if (p1)
+    {
+        stomper.disconnect();
+        delay(200);
+        ESP.restart();
+    }
     return Stomp::CONTINUE;
 }
 void Automata::onActionReceived(HandleAction cb)
 {
     _handleAction = cb;
 }
-void Automata::delayedUpdate(HandleDelay hd){
+void Automata::delayedUpdate(HandleDelay hd)
+{
     _handleDelay = hd;
 }
