@@ -40,6 +40,56 @@ char Automata::toLowerCase(char c)
     return c;
 }
 
+void Automata::configureWiFi()
+{
+    JsonDocument req;
+    req["wifi"] = "get";
+    String jsonString;
+    serializeJson(req, jsonString);
+    // Try to fetch the latest Wi-Fi list
+    String res = sendHttp(jsonString, "wifiList");
+    Serial.print("wifi list ");
+    Serial.println(res);
+    if (res != "")
+    {
+        preferences.putString("wifiList", res);
+    }
+
+    // Retrieve Wi-Fi config from preferences
+    String config = preferences.getString("wifiList", "");
+    if (config == "")
+    {
+        Serial.println("No Wi-Fi configuration found.");
+        return;
+    }
+
+    // Parse the JSON config
+    JsonDocument doc;
+    DeserializationError error = deserializeJson(doc, config);
+    if (error)
+    {
+        Serial.print("Failed to parse Wi-Fi list JSON: ");
+        Serial.println(error.c_str());
+        return;
+    }
+
+    // Dynamically add available Wi-Fi networks
+    for (int i = 1; i <= 5; ++i) // Increase this if more networks are supported
+    {
+        String keySsid = "wn" + String(i);
+        String keyPass = "wp" + String(i);
+
+        if (doc.containsKey(keySsid) && doc[keySsid].as<String>() != "")
+        {
+            String ssid = doc[keySsid].as<String>();
+            String password = doc.containsKey(keyPass) ? doc[keyPass].as<String>() : "";
+            wifiMulti.addAP(ssid.c_str(), password.c_str());
+            Serial.printf("Added Wi-Fi network: %s\n", ssid.c_str());
+        }
+    }
+}
+
+
 void Automata::begin()
 {
     // Serial.begin(115200);
@@ -49,17 +99,17 @@ void Automata::begin()
     Serial.println(preferences.begin("my-app", false));
 
     // preferences.clear();
-
     wifiMulti.addAP("JioFiber-x5hnq", "12341234");
     wifiMulti.addAP("Net2.4", "12345678");
     wifiMulti.addAP("wifi_NET", "444555666");
-    // wifiMulti.addAP("Akhil_E504", "504504504");
+    configureWiFi();
+
     macAddr = getMacAddress();
 
     getConfig();
     xTaskCreatePinnedToCore([](void *params)
                             { static_cast<Automata *>(params)->keepWiFiAlive(); },
-                            "keepWiFiAlive", 4096, this, 1, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+                            "keepWiFiAlive", 6096, this, 1, NULL, CONFIG_ARDUINO_RUNNING_CORE);
     Serial.println("waiting");
     while (!WiFi.isConnected())
     {
@@ -148,7 +198,6 @@ void Automata::keepWiFiAlive()
             ws();
         }
 
-        
         ws();
         configTime(5.5 * 3600, 0, ntpServer);
         setOTA();
@@ -156,6 +205,7 @@ void Automata::keepWiFiAlive()
         Serial.println("IP address: ");
         Serial.println(WiFi.localIP());
         handleWebServer();
+        
     }
 }
 
@@ -306,6 +356,7 @@ void Automata::registerDevice()
     while (retryCount < 5)
     {
         String res = sendHttp(jsonString, "register");
+        configureWiFi();
         if (res != "")
         {
             isDeviceRegistered = true;

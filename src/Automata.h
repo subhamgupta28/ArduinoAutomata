@@ -32,12 +32,20 @@ struct Attribute
     JsonDocument extras;
 };
 
+struct WifiConfig
+{
+    String name;
+    String password;
+    String key;
+};
+
 typedef struct
 {
     JsonDocument data;
 } Action;
 
 typedef std::vector<Attribute> AttributeList;
+typedef std::vector<WifiConfig> WifiList;
 typedef void (*HandleAction)(const Action action);
 typedef void (*HandleDelay)();
 
@@ -162,6 +170,7 @@ public:
 private:
     void keepWiFiAlive();
     void keepWiFiAlive2();
+    void configureWiFi();
     void getConfig();
     void ws();
     String getMacAddress();
@@ -177,6 +186,7 @@ private:
 
     AttributeList attributeList;
 
+    WifiList wifiList;
     HandleAction _handleAction;
     HandleDelay _handleDelay;
     AsyncWebServer server;
