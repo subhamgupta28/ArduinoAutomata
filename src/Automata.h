@@ -13,7 +13,8 @@
 // #include "config.h"
 #include <ArduinoOTA.h>
 #include <vector>
-
+#include "esp_mac.h"     // For esp_mac_type_t and ESP_MAC_WIFI_STA
+#include "esp_system.h" 
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 

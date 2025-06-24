@@ -145,18 +145,13 @@ Preferences Automata::getPreferences()
 String Automata::getMacAddress()
 {
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA); // for Wi-Fi station
+    esp_read_mac(mac, ESP_MAC_WIFI_STA);  // Portable across ESP32, ESP32-C3/C6/S3/etc.
 
-    // Store MAC address in a string
-    String macAddress = "";
-    for (int i = 0; i < 6; i++)
-    {
-        if (i > 0)
-        {
-            macAddress += ":";
-        }
-        macAddress += String(mac[i], HEX);
-    }
+    char macStr[18];
+    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
+             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+
+    String macAddress = String(macStr);
     Serial.println(macAddress);
     return macAddress;
 }
