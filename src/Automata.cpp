@@ -89,7 +89,6 @@ void Automata::configureWiFi()
     }
 }
 
-
 void Automata::begin()
 {
     // Serial.begin(115200);
@@ -100,7 +99,7 @@ void Automata::begin()
 
     // preferences.clear();
     wifiMulti.addAP("JioFiber-x5hnq", "12341234");
-    wifiMulti.addAP("Net2.4", "12345678");
+    wifiMulti.addAP("Airtel_Itsvergin", "touchmenot");
     wifiMulti.addAP("wifi_NET", "444555666");
     configureWiFi();
 
@@ -145,13 +144,18 @@ Preferences Automata::getPreferences()
 String Automata::getMacAddress()
 {
     uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA);  // Portable across ESP32, ESP32-C3/C6/S3/etc.
+    esp_read_mac(mac, ESP_MAC_WIFI_STA); // for Wi-Fi station
 
-    char macStr[18];
-    snprintf(macStr, sizeof(macStr), "%02X:%02X:%02X:%02X:%02X:%02X",
-             mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
-
-    String macAddress = String(macStr);
+    // Store MAC address in a string
+    String macAddress = "";
+    for (int i = 0; i < 6; i++)
+    {
+        if (i > 0)
+        {
+            macAddress += ":";
+        }
+        macAddress += String(mac[i], HEX);
+    }
     Serial.println(macAddress);
     return macAddress;
 }
@@ -200,7 +204,6 @@ void Automata::keepWiFiAlive()
         Serial.println("IP address: ");
         Serial.println(WiFi.localIP());
         handleWebServer();
-        
     }
 }
 
@@ -267,10 +270,61 @@ void Automata::setOTA()
 void Automata::sendLive(JsonDocument data)
 {
     stomper.sendMessage("/app/sendLiveData", send(data));
+
+    // String res = preferences.getString("automations", "{}");
+    // JsonDocument resp = parseString(res);
+    // JsonArray automationsArray = resp["automations"];
+
+    // Preferences statePrefs;
+    // statePrefs.begin("matchStates", false);  // new namespace for match tracking
+
+    // for (JsonObject automation : automationsArray)
+    // {
+    //     String sensorKey = automation["sensorKey"];
+    //     if (!data.containsKey(sensorKey)) continue;
+
+    //     float currentValue = data[sensorKey].as<float>();
+    //     String cmd = automation["command"];
+    //     String automationId = automation["automationId"];
+    //     bool matched = false;
+
+    //     if (cmd == "rangeCondition") {
+    //         float above = automation["above"] | -9999.0;
+    //         float below = automation["below"] | 9999.0;
+    //         if (currentValue > above && currentValue < below)
+    //             matched = true;
+    //     } else if (cmd == "exactMatch") {
+    //         float expected = automation["value"];
+    //         if (currentValue == expected)
+    //             matched = true;
+    //     }
+
+    //     // Read last known match state
+    //     bool lastMatched = statePrefs.getBool(automationId.c_str(), false);
+
+    //     // Only send if the match state changed
+    //     if (matched != lastMatched) {
+    //         JsonDocument actionDoc;
+    //         actionDoc["key"] = sensorKey;
+    //         actionDoc["automationId"] = automationId;
+    //         actionDoc["value"] = currentValue;
+    //         actionDoc["match"] = matched;
+
+    //         stomper.sendMessage("/app/action", send(actionDoc));
+
+    //         // Save updated state
+    //         statePrefs.putBool(automationId.c_str(), matched);
+    //     }
+    // }
+
+    // statePrefs.end();
+
+    // Stream live data to clients
     String json;
     serializeJson(data, json);
-    events.send(String(json).c_str(), "live", millis());
+    events.send(json.c_str(), "live", millis());
 }
+
 
 void Automata::sendData(JsonDocument doc)
 {
@@ -549,6 +603,58 @@ JsonDocument Automata::parseString(String str)
     }
     return resp;
 }
+void Automata::parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations)
+{
+    String conditionStr = resp[automationId];
+    if (conditionStr.isEmpty())
+        return;
+
+    JsonObject entry = automations.createNestedObject();
+    entry["automationId"] = automationId;
+
+    int gtIndex = conditionStr.indexOf('>');
+    int ltIndex = conditionStr.indexOf('<');
+    int eqIndex = conditionStr.indexOf('=');
+
+    if (eqIndex != -1)
+    {
+        // Exact match
+        String key = conditionStr.substring(0, eqIndex);
+        String value = conditionStr.substring(eqIndex + 1);
+        key.trim();
+        value.trim();
+
+        entry["command"] = "exactMatch";
+        entry["sensorKey"] = key;
+        entry["value"] = value.toFloat();
+    }
+    else
+    {
+        // Range match
+        String key = conditionStr;
+        if (gtIndex != -1)
+            key = conditionStr.substring(0, gtIndex);
+        else if (ltIndex != -1)
+            key = conditionStr.substring(0, ltIndex);
+        key.trim();
+
+        entry["command"] = "rangeCondition";
+        entry["sensorKey"] = key;
+
+        if (gtIndex != -1)
+        {
+            int end = (ltIndex != -1) ? ltIndex - 1 : conditionStr.length();
+            String above = conditionStr.substring(gtIndex + 1, end);
+            entry["above"] = above.toFloat();
+        }
+
+        if (ltIndex != -1)
+        {
+            String below = conditionStr.substring(ltIndex + 1);
+            entry["below"] = below.toFloat();
+        }
+    }
+}
 
 Stomp::Stomp_Ack_t Automata::handleAction(const Stomp::StompCommand cmd)
 {
@@ -560,14 +666,44 @@ Stomp::Stomp_Ack_t Automata::handleAction(const Stomp::StompCommand cmd)
     _handleAction(action);
     bool p1 = action.data["reboot"];
     JsonDocument doc;
-
+    JsonDocument doc2;
+    JsonArray automationsArray = doc2.createNestedArray("automations");
     if (p1)
     {
         doc["command"] = "reboot";
     }
     else
     {
-        doc["command"] = resp["key"];
+        const char *keysStr = resp["keys"];
+        if (keysStr != nullptr)
+        {
+            String keys(keysStr);
+            keys.trim();
+
+            int start = 0;
+            int commaIndex = 0;
+
+            while ((commaIndex = keys.indexOf(',', start)) != -1)
+            {
+                String id = keys.substring(start, commaIndex);
+                id.trim();
+                parseConditionToArray(id, resp, automationsArray);
+                start = commaIndex + 1;
+            }
+
+            // Handle the last key
+            String lastId = keys.substring(start);
+            lastId.trim();
+            if (!lastId.isEmpty())
+            {
+                parseConditionToArray(lastId, resp, automationsArray);
+            }
+
+            // Save automation
+            String jsonStr;
+            serializeJson(doc2, jsonStr);
+            preferences.putString("automations", jsonStr);
+        }
     }
 
     doc["key"] = "actionAck";

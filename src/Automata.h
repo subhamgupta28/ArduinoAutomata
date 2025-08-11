@@ -13,8 +13,8 @@
 // #include "config.h"
 #include <ArduinoOTA.h>
 #include <vector>
-#include "esp_mac.h"     // For esp_mac_type_t and ESP_MAC_WIFI_STA
-#include "esp_system.h" 
+// #include "esp_mac.h"     // For esp_mac_type_t and ESP_MAC_WIFI_STA
+// #include "esp_system.h" 
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 
@@ -178,6 +178,7 @@ private:
     void setOTA();
     char toLowerCase(char c);
     String convertToLowerAndUnderscore(String input);
+    void parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations);
     String sendHttp(String output, String endpoint);
     String send(JsonDocument doc);
     JsonDocument parseString(String str);
