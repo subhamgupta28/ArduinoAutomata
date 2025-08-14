@@ -108,7 +108,7 @@ void Automata::begin()
     getConfig();
     xTaskCreatePinnedToCore([](void *params)
                             { static_cast<Automata *>(params)->keepWiFiAlive(); },
-                            "keepWiFiAlive", 6096, this, 1, NULL, CONFIG_ARDUINO_RUNNING_CORE);
+                            "keepWiFiAlive", 6096, this, 1, NULL, xPortGetCoreID());
     Serial.println("waiting");
     while (!WiFi.isConnected())
     {
@@ -141,23 +141,26 @@ Preferences Automata::getPreferences()
     return preferences;
 }
 
-String Automata::getMacAddress()
-{
-    uint8_t mac[6];
-    esp_read_mac(mac, ESP_MAC_WIFI_STA); // for Wi-Fi station
+// String Automata::getMacAddress()
+// {
+//     uint8_t mac[6];
+//     esp_read_mac(mac, ESP_IF_WIFI_STA); // for Wi-Fi station
 
-    // Store MAC address in a string
-    String macAddress = "";
-    for (int i = 0; i < 6; i++)
-    {
-        if (i > 0)
-        {
-            macAddress += ":";
-        }
-        macAddress += String(mac[i], HEX);
-    }
-    Serial.println(macAddress);
-    return macAddress;
+//     // Store MAC address in a string
+//     String macAddress = "";
+//     for (int i = 0; i < 6; i++)
+//     {
+//         if (i > 0)
+//         {
+//             macAddress += ":";
+//         }
+//         macAddress += String(mac[i], HEX);
+//     }
+//     Serial.println(macAddress);
+//     return macAddress;
+// }
+String Automata::getMacAddress() {
+    return WiFi.macAddress();  // Returns in format "AA:BB:CC:DD:EE:FF"
 }
 
 void Automata::keepWiFiAlive()
@@ -181,10 +184,10 @@ void Automata::keepWiFiAlive()
         {
             // Serial.print(".");
         }
-        if (!MDNS.begin(convertToLowerAndUnderscore(deviceName)))
-        {
-            Serial.println("Error setting up MDNS responder!");
-        }
+        // if (!MDNS.begin(convertToLowerAndUnderscore(deviceName)))
+        // {
+        //     Serial.println("Error setting up MDNS responder!");
+        // }
         if (WiFi.status() != WL_CONNECTED)
         {
             Serial.println("WiFi FAILED");
