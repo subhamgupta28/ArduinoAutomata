@@ -22,7 +22,8 @@ void freeError(Stomp::StompCommand cmd);
 Stomp::Stomp_Ack_t freeHandleUpdate(Stomp::StompCommand cmd);
 Stomp::Stomp_Ack_t freeHandleAction(Stomp::StompCommand cmd);
 
-struct Attribute {
+struct Attribute
+{
     String key;
     String displayName;
     String unit;
@@ -30,13 +31,15 @@ struct Attribute {
     JsonDocument extras;
 };
 
-struct WifiConfig {
+struct WifiConfig
+{
     String name;
     String password;
     String key;
 };
 
-typedef struct {
+typedef struct
+{
     JsonDocument data;
 } Action;
 
@@ -92,7 +95,8 @@ const char index_html[] PROGMEM = R"rawliteral(
 </html>
 )rawliteral";
 
-class Automata {
+class Automata
+{
 public:
     static Automata *instance;
     Automata(String deviceName, const char *HOST, int PORT);
@@ -107,6 +111,8 @@ public:
     void subscribe(const Stomp::StompCommand cmd);
     void onActionReceived(HandleAction cb);
     void delayedUpdate(HandleDelay hd);
+    String getAutomations();
+    String getAutomationId(const String &name);
     Preferences getPreferences();
     int getDelay();
     void error(const Stomp::StompCommand cmd);
@@ -115,15 +121,17 @@ public:
 
 private:
     void keepWiFiAlive();
-    void keepWiFiAlive2();
     void configureWiFi();
     void getConfig();
     void ws();
     String getMacAddress();
+    void getAutomationsList();
     void setOTA();
     char toLowerCase(char c);
+    void splitAutomations(const String &input, String &names, String &ids);
+    String getIdByName(const String& input, const String& searchName);
     String convertToLowerAndUnderscore(String input);
-    void parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations);
+    // void parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations);
     String sendHttp(String output, String endpoint);
     String send(JsonDocument doc);
     JsonDocument parseString(String str);
@@ -149,9 +157,12 @@ private:
     String config;
     String deviceId;
     String macAddr;
+    String automations;
+    String automationIds;
+    String automationKeyIds;
     bool isDeviceRegistered;
-    unsigned long previousMillis;
-    int d;
+    unsigned long previousMillis = millis();
+    int d = 60000;
 };
 
 #endif

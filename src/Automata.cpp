@@ -91,7 +91,7 @@ void Automata::configureWiFi()
 
 void Automata::begin()
 {
-    // Serial.begin(115200);
+    Serial.begin(115200);
     WiFi.mode(WIFI_STA);
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
     WiFi.setHostname(convertToLowerAndUnderscore(deviceName).c_str());
@@ -108,11 +108,11 @@ void Automata::begin()
     getConfig();
     xTaskCreatePinnedToCore([](void *params)
                             { static_cast<Automata *>(params)->keepWiFiAlive(); },
-                            "keepWiFiAlive", 6096, this, 1, NULL, xPortGetCoreID());
-    Serial.println("waiting");
-    while (!WiFi.isConnected())
-    {
-    }
+                            "keepWiFiAlive", 4000, this, 1, NULL, xPortGetCoreID());
+
+    // xTaskCreate([](void *params)
+    //             { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 3000, NULL, 2, NULL);
+
     // ws();
     // registerDevice();
 }
@@ -141,6 +141,96 @@ Preferences Automata::getPreferences()
     return preferences;
 }
 
+void Automata::getAutomationsList()
+{
+    JsonDocument req;
+    req["list"] = "get";
+    String jsonString;
+    serializeJson(req, jsonString);
+    String res = sendHttp(jsonString, "automations");
+    Serial.println(res);
+    if (res != "")
+    {
+        String names, ids;
+        automationKeyIds = res;
+        splitAutomations(res, names, ids);
+        automations = names;
+        automationIds = ids;
+    }
+    
+}
+String Automata::getIdByName(const String& input, const String& searchName) {
+    int start = 0;
+
+    while (start < input.length()) {
+        // find the next comma
+        int commaIndex = input.indexOf(',', start);
+        if (commaIndex == -1) commaIndex = input.length();
+
+        // extract "name:id"
+        String pair = input.substring(start, commaIndex);
+
+        int colonIndex = pair.indexOf(':');
+        if (colonIndex > 0) {
+            String name = pair.substring(0, colonIndex);
+            String id   = pair.substring(colonIndex + 1);
+
+            // match name (case-sensitive)
+            if (name == searchName) {
+                return id;
+            }
+        }
+
+        start = commaIndex + 1;
+    }
+
+    // not found
+    return "";
+}
+
+void Automata::splitAutomations(const String &input, String &names, String &ids)
+{
+    names = "";
+    ids = "";
+    int start = 0;
+
+    while (start < input.length())
+    {
+        // find the next comma
+        int commaIndex = input.indexOf(',', start);
+        if (commaIndex == -1)
+            commaIndex = input.length();
+
+        // extract "name:id"
+        String pair = input.substring(start, commaIndex);
+
+        int colonIndex = pair.indexOf(':');
+        if (colonIndex > 0)
+        {
+            String name = pair.substring(0, colonIndex);
+            String id = pair.substring(colonIndex + 1);
+
+            if (names.length() > 0)
+            {
+                names += ",";
+                ids += ",";
+            }
+            names += name;
+            ids += id;
+        }
+
+        start = commaIndex + 1;
+    }
+}
+
+String Automata::getAutomations()
+{
+    return automations;
+}
+String Automata::getAutomationId(const String &name)
+{
+    return getIdByName(automationKeyIds, name);
+}
 // String Automata::getMacAddress()
 // {
 //     uint8_t mac[6];
@@ -159,54 +249,67 @@ Preferences Automata::getPreferences()
 //     Serial.println(macAddress);
 //     return macAddress;
 // }
-String Automata::getMacAddress() {
-    return WiFi.macAddress();  // Returns in format "AA:BB:CC:DD:EE:FF"
+String Automata::getMacAddress()
+{
+    return WiFi.macAddress(); // Returns in format "AA:BB:CC:DD:EE:FF"
 }
 
 void Automata::keepWiFiAlive()
 {
+    const TickType_t delayConnected = 10000 / portTICK_PERIOD_MS;    // 10s when connected
+    const TickType_t delayDisconnected = 20000 / portTICK_PERIOD_MS; // 20s on failure
+
+    bool wasConnected = false; // Track last connection state
+
     for (;;)
     {
-        if (!webSocket.isConnected())
-        {
-            ws();
-        }
-        if (WiFi.status() == WL_CONNECTED)
-        {
-            vTaskDelay(10000 / portTICK_PERIOD_MS);
-            continue;
-        }
+        wl_status_t status = WiFi.status();
 
-        Serial.print("Connecting to WiFi...");
-        unsigned long attemptTime = millis();
-
-        while (wifiMulti.run() != WL_CONNECTED && millis() - attemptTime < 20000)
+        if (status != WL_CONNECTED)
         {
-            // Serial.print(".");
-        }
-        // if (!MDNS.begin(convertToLowerAndUnderscore(deviceName)))
-        // {
-        //     Serial.println("Error setting up MDNS responder!");
-        // }
-        if (WiFi.status() != WL_CONNECTED)
-        {
-            Serial.println("WiFi FAILED");
-            vTaskDelay(20000 / portTICK_PERIOD_MS);
-            continue;
-        }
+            if (wasConnected)
+            {
+                Serial.println("WiFi disconnected. Retrying...");
+                wasConnected = false;
+            }
 
-        if (!webSocket.isConnected())
-        {
-            ws();
-        }
+            unsigned long attemptStart = millis();
+            while (wifiMulti.run() != WL_CONNECTED &&
+                   millis() - attemptStart < 20000)
+            {
+                vTaskDelay(500 / portTICK_PERIOD_MS);
+            }
 
-        ws();
-        configTime(5.5 * 3600, 0, ntpServer);
-        setOTA();
-        Serial.println("WiFi connected");
-        Serial.println("IP address: ");
-        Serial.println(WiFi.localIP());
-        handleWebServer();
+            if (WiFi.status() == WL_CONNECTED)
+            {
+                Serial.println("WiFi connected");
+                Serial.println("IP address:");
+                Serial.println(WiFi.localIP());
+
+                // Setup only on *first connect* or after disconnection
+                // if (!MDNS.begin(convertToLowerAndUnderscore(deviceName))) {
+                //     Serial.println("Error setting up MDNS responder!");
+                // }
+
+                configTime(5.5 * 3600, 0, ntpServer);
+                setOTA();
+                ws();
+                registerDevice();
+                handleWebServer();
+
+                wasConnected = true;
+            }
+            else
+            {
+                Serial.println("WiFi connect FAILED");
+                vTaskDelay(delayDisconnected);
+            }
+        }
+        else
+        {
+            // Still connected → just wait
+            vTaskDelay(delayConnected);
+        }
     }
 }
 
@@ -216,25 +319,32 @@ long regWait = 30000;
 void Automata::loop()
 {
     unsigned long currentMillis = millis();
+
     if (wifiMulti.run() == WL_CONNECTED)
     {
+        // Maintain connections
         webSocket.loop();
-        // if (!webSocket.isConnected())
-        // {
-        //     ws();
-        // }
+
         ArduinoOTA.handle();
-        if (currentMillis - previousMillis > getDelay())
+        // Serial.println(d);
+
+        // Handle periodic tasks
+        if (currentMillis - previousMillis >= getDelay())
         {
             _handleDelay();
-            previousMillis = currentMillis;
+            previousMillis = millis(); // prevents drift
         }
 
-        if (!isDeviceRegistered && (currentMillis - regTime) > regWait)
+        // Handle device registration retry
+        if (!isDeviceRegistered && (currentMillis - regTime) >= regWait)
         {
             registerDevice();
             regTime = currentMillis;
         }
+    }
+    else
+    {
+        // Optional: Handle disconnected state (e.g., LED blink or minimal work)
     }
 }
 
@@ -273,61 +383,11 @@ void Automata::setOTA()
 void Automata::sendLive(JsonDocument data)
 {
     stomper.sendMessage("/app/sendLiveData", send(data));
-
-    // String res = preferences.getString("automations", "{}");
-    // JsonDocument resp = parseString(res);
-    // JsonArray automationsArray = resp["automations"];
-
-    // Preferences statePrefs;
-    // statePrefs.begin("matchStates", false);  // new namespace for match tracking
-
-    // for (JsonObject automation : automationsArray)
-    // {
-    //     String sensorKey = automation["sensorKey"];
-    //     if (!data.containsKey(sensorKey)) continue;
-
-    //     float currentValue = data[sensorKey].as<float>();
-    //     String cmd = automation["command"];
-    //     String automationId = automation["automationId"];
-    //     bool matched = false;
-
-    //     if (cmd == "rangeCondition") {
-    //         float above = automation["above"] | -9999.0;
-    //         float below = automation["below"] | 9999.0;
-    //         if (currentValue > above && currentValue < below)
-    //             matched = true;
-    //     } else if (cmd == "exactMatch") {
-    //         float expected = automation["value"];
-    //         if (currentValue == expected)
-    //             matched = true;
-    //     }
-
-    //     // Read last known match state
-    //     bool lastMatched = statePrefs.getBool(automationId.c_str(), false);
-
-    //     // Only send if the match state changed
-    //     if (matched != lastMatched) {
-    //         JsonDocument actionDoc;
-    //         actionDoc["key"] = sensorKey;
-    //         actionDoc["automationId"] = automationId;
-    //         actionDoc["value"] = currentValue;
-    //         actionDoc["match"] = matched;
-
-    //         stomper.sendMessage("/app/action", send(actionDoc));
-
-    //         // Save updated state
-    //         statePrefs.putBool(automationId.c_str(), matched);
-    //     }
-    // }
-
-    // statePrefs.end();
-
     // Stream live data to clients
     String json;
     serializeJson(data, json);
     events.send(json.c_str(), "live", millis());
 }
-
 
 void Automata::sendData(JsonDocument doc)
 {
@@ -372,9 +432,21 @@ void Automata::addAttribute(String key, String displayName, String unit, String 
 
 void Automata::registerDevice()
 {
-    Serial.println("Registering Device");
+    static uint8_t retryCount = 0;
+    static unsigned long lastAttempt = 0;
 
-    JsonDocument doc;
+    if (isDeviceRegistered)
+        return;
+
+    unsigned long now = millis();
+
+    // Wait before retry
+    if (retryCount > 0 && now - lastAttempt < 5000)
+        return;
+
+    Serial.printf("Registering Device (attempt %d)...\n", retryCount + 1);
+
+    StaticJsonDocument<1024> doc; // Adjust size as needed
     doc["name"] = deviceName;
     doc["deviceId"] = deviceId;
     doc["type"] = "sensor";
@@ -386,8 +458,7 @@ void Automata::registerDevice()
     doc["sleep"] = false;
     doc["accessUrl"] = "http://" + WiFi.localIP().toString();
 
-    JsonArray attributes = doc["attributes"].to<JsonArray>();
-
+    JsonArray attributes = doc.createNestedArray("attributes");
     for (auto &attribute : attributeList)
     {
         JsonObject attr1 = attributes.createNestedObject();
@@ -404,81 +475,31 @@ void Automata::registerDevice()
     String jsonString;
     serializeJson(doc, jsonString);
 
-    int retryCount = 0;
-    while (retryCount < 5)
-    {
-        String res = sendHttp(jsonString, "register");
-        configureWiFi();
-        if (res != "")
-        {
-            isDeviceRegistered = true;
-            JsonDocument resp;
-            deserializeJson(resp, res);
-            deviceId = resp["id"].as<String>();
-            preferences.putString("deviceId", deviceId);
-            Serial.println("Device Registered");
-            Serial.println(res);
-            return;
-        }
-        Serial.println("Device Registration failed. Retrying in 5 sec...");
-        delay(5000);
-        retryCount++;
-    }
-
-    Serial.println("Device registration failed after multiple attempts. Rebooting...");
-}
-
-void Automata::registerDeviceOld()
-{
-    Serial.println("Registering Device");
-
-    JsonDocument doc;
-    doc["name"] = deviceName;
-    doc["deviceId"] = deviceId;
-    doc["type"] = "sensor";
-    doc["updateInterval"] = d;
-    doc["status"] = "ONLINE";
-    doc["macAddr"] = macAddr;
-    doc["reboot"] = false;
-    doc["sleep"] = false;
-    doc["accessUrl"] = "http://" + WiFi.localIP().toString();
-
-    JsonArray attributes = doc["attributes"].to<JsonArray>();
-
-    for (auto attribute : attributeList)
-    {
-        JsonObject attr1 = attributes.add<JsonObject>();
-        attr1["value"] = "";
-        attr1["displayName"] = attribute.displayName;
-        attr1["key"] = attribute.key;
-        attr1["units"] = attribute.unit;
-        attr1["type"] = attribute.type;
-        attr1["extras"] = attribute.extras;
-        attr1["visible"] = true;
-        attr1["valueDataType"] = "String";
-    }
-
-    String jsonString;
-    serializeJson(doc, jsonString);
     String res = sendHttp(jsonString, "register");
 
-    while (res == "")
+    if (res != "")
     {
-        Serial.println("Device Registeration failed.");
-        Serial.println("Trying to register the device again in 5 sec");
-        res = sendHttp(jsonString, "register");
-        delay(5000);
+        JsonDocument resp;
+        deserializeJson(resp, res);
+        deviceId = resp["id"].as<String>();
+        preferences.putString("deviceId", deviceId);
+        isDeviceRegistered = true;
+        Serial.println("Device Registered");
+        Serial.println(res);
+        getAutomationsList();
+        retryCount = 0;
     }
-    isDeviceRegistered = true;
-    Serial.print("Response: ");
-    Serial.println(res);
-    JsonDocument resp;
+    else
+    {
+        retryCount++;
+        if (retryCount >= 5)
+        {
+            Serial.println("Device registration failed after multiple attempts. Rebooting...");
+            // ESP.restart();
+        }
+    }
 
-    deserializeJson(resp, res);
-    deviceId = resp["id"].as<String>();
-    preferences.putString("deviceId", deviceId);
-    Serial.println("Device Registered");
-    Serial.println(res);
+    lastAttempt = now;
 }
 
 String Automata::sendHttp(String output, String endpoint)
@@ -528,7 +549,7 @@ void Automata::getConfig()
         Serial.println(sv);
         JsonDocument resp;
         deserializeJson(resp, sv);
-        d = resp["updateInterval"].as<int>();
+        // d = resp["updateInterval"].as<int>();
     }
 }
 
@@ -606,58 +627,6 @@ JsonDocument Automata::parseString(String str)
     }
     return resp;
 }
-void Automata::parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations)
-{
-    String conditionStr = resp[automationId];
-    if (conditionStr.isEmpty())
-        return;
-
-    JsonObject entry = automations.createNestedObject();
-    entry["automationId"] = automationId;
-
-    int gtIndex = conditionStr.indexOf('>');
-    int ltIndex = conditionStr.indexOf('<');
-    int eqIndex = conditionStr.indexOf('=');
-
-    if (eqIndex != -1)
-    {
-        // Exact match
-        String key = conditionStr.substring(0, eqIndex);
-        String value = conditionStr.substring(eqIndex + 1);
-        key.trim();
-        value.trim();
-
-        entry["command"] = "exactMatch";
-        entry["sensorKey"] = key;
-        entry["value"] = value.toFloat();
-    }
-    else
-    {
-        // Range match
-        String key = conditionStr;
-        if (gtIndex != -1)
-            key = conditionStr.substring(0, gtIndex);
-        else if (ltIndex != -1)
-            key = conditionStr.substring(0, ltIndex);
-        key.trim();
-
-        entry["command"] = "rangeCondition";
-        entry["sensorKey"] = key;
-
-        if (gtIndex != -1)
-        {
-            int end = (ltIndex != -1) ? ltIndex - 1 : conditionStr.length();
-            String above = conditionStr.substring(gtIndex + 1, end);
-            entry["above"] = above.toFloat();
-        }
-
-        if (ltIndex != -1)
-        {
-            String below = conditionStr.substring(ltIndex + 1);
-            entry["below"] = below.toFloat();
-        }
-    }
-}
 
 Stomp::Stomp_Ack_t Automata::handleAction(const Stomp::StompCommand cmd)
 {
@@ -674,39 +643,6 @@ Stomp::Stomp_Ack_t Automata::handleAction(const Stomp::StompCommand cmd)
     if (p1)
     {
         doc["command"] = "reboot";
-    }
-    else
-    {
-        const char *keysStr = resp["keys"];
-        if (keysStr != nullptr)
-        {
-            String keys(keysStr);
-            keys.trim();
-
-            int start = 0;
-            int commaIndex = 0;
-
-            while ((commaIndex = keys.indexOf(',', start)) != -1)
-            {
-                String id = keys.substring(start, commaIndex);
-                id.trim();
-                parseConditionToArray(id, resp, automationsArray);
-                start = commaIndex + 1;
-            }
-
-            // Handle the last key
-            String lastId = keys.substring(start);
-            lastId.trim();
-            if (!lastId.isEmpty())
-            {
-                parseConditionToArray(lastId, resp, automationsArray);
-            }
-
-            // Save automation
-            String jsonStr;
-            serializeJson(doc2, jsonStr);
-            preferences.putString("automations", jsonStr);
-        }
     }
 
     doc["key"] = "actionAck";
