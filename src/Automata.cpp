@@ -108,7 +108,7 @@ void Automata::begin()
     getConfig();
     xTaskCreatePinnedToCore([](void *params)
                             { static_cast<Automata *>(params)->keepWiFiAlive(); },
-                            "keepWiFiAlive", 4000, this, 1, NULL, xPortGetCoreID());
+                            "keepWiFiAlive", 4096, this, 1, NULL, xPortGetCoreID());
 
     // xTaskCreate([](void *params)
     //             { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 3000, NULL, 2, NULL);
@@ -157,26 +157,30 @@ void Automata::getAutomationsList()
         automations = names;
         automationIds = ids;
     }
-    
 }
-String Automata::getIdByName(const String& input, const String& searchName) {
+String Automata::getIdByName(const String &input, const String &searchName)
+{
     int start = 0;
 
-    while (start < input.length()) {
+    while (start < input.length())
+    {
         // find the next comma
         int commaIndex = input.indexOf(',', start);
-        if (commaIndex == -1) commaIndex = input.length();
+        if (commaIndex == -1)
+            commaIndex = input.length();
 
         // extract "name:id"
         String pair = input.substring(start, commaIndex);
 
         int colonIndex = pair.indexOf(':');
-        if (colonIndex > 0) {
+        if (colonIndex > 0)
+        {
             String name = pair.substring(0, colonIndex);
-            String id   = pair.substring(colonIndex + 1);
+            String id = pair.substring(colonIndex + 1);
 
             // match name (case-sensitive)
-            if (name == searchName) {
+            if (name == searchName)
+            {
                 return id;
             }
         }
@@ -253,8 +257,70 @@ String Automata::getMacAddress()
 {
     return WiFi.macAddress(); // Returns in format "AA:BB:CC:DD:EE:FF"
 }
-
 void Automata::keepWiFiAlive()
+{
+    const TickType_t delayConnected = 10000 / portTICK_PERIOD_MS;   // 10s
+    const TickType_t delayDisconnected = 5000 / portTICK_PERIOD_MS; // 5s
+
+    uint8_t retryCount = 0;
+    bool wasConnected = false;
+
+    for (;;)
+    {
+        if (WiFi.status() != WL_CONNECTED)
+        {
+            if (wasConnected)
+            {
+                Serial.println("WiFi disconnected. Retrying...");
+                wasConnected = false;
+            }
+
+           
+            if (wifiMulti.run() == WL_CONNECTED)
+            {
+                Serial.println("WiFi connected!");
+                Serial.print("IP address: ");
+                Serial.println(WiFi.localIP());
+                vTaskDelay(pdMS_TO_TICKS(1000));
+                // Re-init services only when first connected
+                configTime(5.5 * 3600, 0, ntpServer);
+                setOTA();
+                ws();
+                registerDevice();
+                handleWebServer();
+
+                retryCount = 0;
+                wasConnected = true;
+            }
+            else
+            {
+                retryCount++;
+                Serial.printf("WiFi reconnect failed (attempt %d)\n", retryCount);
+
+                // Exponential backoff
+                int waitTime = min(30000, (1 << retryCount) * 1000);
+                vTaskDelay(waitTime / portTICK_PERIOD_MS);
+
+                // Fallback: AP mode after many failures
+                if (retryCount > 10)
+                {
+                    Serial.println("Switching to fallback AP mode");
+                    WiFi.mode(WIFI_AP);
+                    WiFi.softAP("Automata_Fallback", "12345678");
+                    Serial.print("AP IP address: ");
+                    Serial.println(WiFi.softAPIP());
+                    retryCount = 0; // reset counter
+                }
+            }
+        }
+        else
+        {
+            vTaskDelay(delayConnected);
+        }
+    }
+}
+
+void Automata::keepWiFiAliveOld()
 {
     const TickType_t delayConnected = 10000 / portTICK_PERIOD_MS;    // 10s when connected
     const TickType_t delayDisconnected = 20000 / portTICK_PERIOD_MS; // 20s on failure
@@ -429,8 +495,71 @@ void Automata::addAttribute(String key, String displayName, String unit, String 
     atb.extras = extras;
     attributeList.push_back(atb);
 }
+void Automata::registerDevice() {
+    static uint8_t retryCount = 0;
+    static unsigned long lastAttempt = 0;
 
-void Automata::registerDevice()
+    if (isDeviceRegistered) return;
+
+    unsigned long now = millis();
+    unsigned long backoff = min(60000UL, (1UL << retryCount) * 1000); // max 60s
+
+    if (retryCount > 0 && now - lastAttempt < backoff) return;
+
+    Serial.printf("Registering Device (attempt %d)...\n", retryCount + 1);
+
+    StaticJsonDocument<1024> doc;
+    doc["name"] = deviceName;
+    doc["deviceId"] = deviceId;
+    doc["type"] = "sensor";
+    doc["updateInterval"] = d;
+    doc["status"] = "ONLINE";
+    doc["host"] = String(WiFi.getHostname());
+    doc["macAddr"] = macAddr;
+    doc["reboot"] = false;
+    doc["sleep"] = false;
+    doc["accessUrl"] = "http://" + WiFi.localIP().toString();
+
+    JsonArray attributes = doc.createNestedArray("attributes");
+    for (auto &attribute : attributeList) {
+        JsonObject attr = attributes.createNestedObject();
+        attr["value"] = "";
+        attr["displayName"] = attribute.displayName;
+        attr["key"] = attribute.key;
+        attr["units"] = attribute.unit;
+        attr["type"] = attribute.type;
+        attr["extras"] = attribute.extras;
+        attr["visible"] = true;
+        attr["valueDataType"] = "String";
+    }
+
+    String jsonString;
+    serializeJson(doc, jsonString);
+    String res = sendHttp(jsonString, "register");
+
+    if (res != "") {
+        DynamicJsonDocument resp(1024);
+        if (deserializeJson(resp, res) == DeserializationError::Ok) {
+            deviceId = resp["id"].as<String>();
+            preferences.putString("deviceId", deviceId);
+            isDeviceRegistered = true;
+            retryCount = 0;
+              getAutomationsList();
+            Serial.println("Device Registered");
+        }
+    } else {
+        retryCount++;
+        Serial.printf("Device registration failed (attempt %d)\n", retryCount);
+        if (retryCount > 8) {
+            Serial.println("Max retries reached, rebooting...");
+            // ESP.restart();
+        }
+    }
+
+    lastAttempt = now;
+}
+
+void Automata::registerDeviceOld()
 {
     static uint8_t retryCount = 0;
     static unsigned long lastAttempt = 0;

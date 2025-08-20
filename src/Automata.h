@@ -121,6 +121,7 @@ public:
 
 private:
     void keepWiFiAlive();
+        void keepWiFiAliveOld();
     void configureWiFi();
     void getConfig();
     void ws();
