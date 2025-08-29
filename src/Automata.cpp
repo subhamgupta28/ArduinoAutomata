@@ -106,12 +106,12 @@ void Automata::begin()
     macAddr = getMacAddress();
 
     getConfig();
-    xTaskCreatePinnedToCore([](void *params)
-                            { static_cast<Automata *>(params)->keepWiFiAlive(); },
-                            "keepWiFiAlive", 4096, this, 1, NULL, xPortGetCoreID());
+    // xTaskCreatePinnedToCore([](void *params)
+    //                         { static_cast<Automata *>(params)->keepWiFiAlive(); },
+    //                         "keepWiFiAlive", 3096, this, 1, NULL, xPortGetCoreID());
 
-    // xTaskCreate([](void *params)
-    //             { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 3000, NULL, 2, NULL);
+    xTaskCreate([](void *params)
+                { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 3072, this, 2, NULL);
 
     // ws();
     // registerDevice();
@@ -119,6 +119,9 @@ void Automata::begin()
 
 void Automata::handleWebServer()
 {
+#if ENABLE_SD_FILE_SERVER
+    beginSDFileServer(&server);
+#endif
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
               { request->send(200, "text/html", index_html); });
     server.on("/restart", HTTP_GET, [](AsyncWebServerRequest *request)
@@ -135,7 +138,20 @@ void Automata::handleWebServer()
     server.addHandler(&events);
     server.begin();
 }
-
+#if ENABLE_SD_FILE_SERVER
+void Automata::beginSDFileServer(AsyncWebServer *existingServer)
+{
+    if (existingServer)
+    {
+        sdweb = new SDWebServer(*existingServer); // share
+    }
+    else
+    {
+        sdweb = new SDWebServer(); // create internal
+    }
+    sdweb->begin();
+}
+#endif
 Preferences Automata::getPreferences()
 {
     return preferences;
@@ -259,7 +275,7 @@ String Automata::getMacAddress()
 }
 void Automata::keepWiFiAlive()
 {
-    const TickType_t delayConnected = 10000 / portTICK_PERIOD_MS;   // 10s
+    const TickType_t delayConnected = 30000 / portTICK_PERIOD_MS;   // 30s
     const TickType_t delayDisconnected = 5000 / portTICK_PERIOD_MS; // 5s
 
     uint8_t retryCount = 0;
@@ -275,7 +291,6 @@ void Automata::keepWiFiAlive()
                 wasConnected = false;
             }
 
-           
             if (wifiMulti.run() == WL_CONNECTED)
             {
                 Serial.println("WiFi connected!");
@@ -305,10 +320,10 @@ void Automata::keepWiFiAlive()
                 if (retryCount > 10)
                 {
                     Serial.println("Switching to fallback AP mode");
-                    WiFi.mode(WIFI_AP);
-                    WiFi.softAP("Automata_Fallback", "12345678");
-                    Serial.print("AP IP address: ");
-                    Serial.println(WiFi.softAPIP());
+                    // WiFi.mode(WIFI_AP);
+                    // WiFi.softAP("Automata_Fallback", "12345678");
+                    // Serial.print("AP IP address: ");
+                    // Serial.println(WiFi.softAPIP());
                     retryCount = 0; // reset counter
                 }
             }
@@ -495,16 +510,19 @@ void Automata::addAttribute(String key, String displayName, String unit, String 
     atb.extras = extras;
     attributeList.push_back(atb);
 }
-void Automata::registerDevice() {
+void Automata::registerDevice()
+{
     static uint8_t retryCount = 0;
     static unsigned long lastAttempt = 0;
 
-    if (isDeviceRegistered) return;
+    if (isDeviceRegistered)
+        return;
 
     unsigned long now = millis();
     unsigned long backoff = min(60000UL, (1UL << retryCount) * 1000); // max 60s
 
-    if (retryCount > 0 && now - lastAttempt < backoff) return;
+    if (retryCount > 0 && now - lastAttempt < backoff)
+        return;
 
     Serial.printf("Registering Device (attempt %d)...\n", retryCount + 1);
 
@@ -521,7 +539,8 @@ void Automata::registerDevice() {
     doc["accessUrl"] = "http://" + WiFi.localIP().toString();
 
     JsonArray attributes = doc.createNestedArray("attributes");
-    for (auto &attribute : attributeList) {
+    for (auto &attribute : attributeList)
+    {
         JsonObject attr = attributes.createNestedObject();
         attr["value"] = "";
         attr["displayName"] = attribute.displayName;
@@ -537,20 +556,25 @@ void Automata::registerDevice() {
     serializeJson(doc, jsonString);
     String res = sendHttp(jsonString, "register");
 
-    if (res != "") {
+    if (res != "")
+    {
         DynamicJsonDocument resp(1024);
-        if (deserializeJson(resp, res) == DeserializationError::Ok) {
+        if (deserializeJson(resp, res) == DeserializationError::Ok)
+        {
             deviceId = resp["id"].as<String>();
             preferences.putString("deviceId", deviceId);
             isDeviceRegistered = true;
             retryCount = 0;
-              getAutomationsList();
+            getAutomationsList();
             Serial.println("Device Registered");
         }
-    } else {
+    }
+    else
+    {
         retryCount++;
         Serial.printf("Device registration failed (attempt %d)\n", retryCount);
-        if (retryCount > 8) {
+        if (retryCount > 8)
+        {
             Serial.println("Max retries reached, rebooting...");
             // ESP.restart();
         }

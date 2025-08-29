@@ -15,6 +15,11 @@
 #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include "esp_mac.h"
+// #define ENABLE_SD_FILE_SERVER 1
+
+#if ENABLE_SD_FILE_SERVER
+#include "SDWebServer.h" // your SD file manager library
+#endif
 
 class Automata;
 void freeSubscribe(Stomp::StompCommand cmd);
@@ -118,10 +123,13 @@ public:
     void error(const Stomp::StompCommand cmd);
     Stomp::Stomp_Ack_t handleUpdate(const Stomp::StompCommand cmd);
     Stomp::Stomp_Ack_t handleAction(const Stomp::StompCommand cmd);
+#if ENABLE_SD_FILE_SERVER
+    void beginSDFileServer(AsyncWebServer *existingServer = nullptr);
+#endif
 
 private:
     void keepWiFiAlive();
-        void keepWiFiAliveOld();
+    void keepWiFiAliveOld();
     void configureWiFi();
     void getConfig();
     void ws();
@@ -130,7 +138,7 @@ private:
     void setOTA();
     char toLowerCase(char c);
     void splitAutomations(const String &input, String &names, String &ids);
-    String getIdByName(const String& input, const String& searchName);
+    String getIdByName(const String &input, const String &searchName);
     String convertToLowerAndUnderscore(String input);
     // void parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations);
     String sendHttp(String output, String endpoint);
@@ -164,6 +172,9 @@ private:
     bool isDeviceRegistered;
     unsigned long previousMillis = millis();
     int d = 60000;
+#if ENABLE_SD_FILE_SERVER
+    SDWebServer *sdweb; // pointer so it can be optional
+#endif
 };
 
 #endif
