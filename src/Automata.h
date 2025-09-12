@@ -48,10 +48,18 @@ typedef struct
     JsonDocument data;
 } Action;
 
+struct MasterData {
+  String key0;
+  String name;
+  String id;
+};
+
+typedef std::vector<MasterData> MasterDataList;
 typedef std::vector<Attribute> AttributeList;
 typedef std::vector<WifiConfig> WifiList;
 typedef void (*HandleAction)(const Action action);
 typedef void (*HandleDelay)();
+
 
 const char index_html[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -108,7 +116,6 @@ public:
     void begin();
     void loop();
     void registerDevice();
-    void registerDeviceOld();
     void addAttribute(String key, String displayName, String unit, String type = "INFO", JsonDocument extras = JsonDocument());
     void sendData(JsonDocument doc);
     void sendLive(JsonDocument doc);
@@ -118,7 +125,10 @@ public:
     void delayedUpdate(HandleDelay hd);
     String getAutomations();
     String getAutomationId(const String &name);
+    bool isDeviceRegistered;
+    MasterDataList getMasterDataList();
     Preferences getPreferences();
+    bool getMasterDeviceByName(const char* searchName, String &outId, String &outKey);
     int getDelay();
     void error(const Stomp::StompCommand cmd);
     Stomp::Stomp_Ack_t handleUpdate(const Stomp::StompCommand cmd);
@@ -135,13 +145,15 @@ private:
     void ws();
     String getMacAddress();
     void getAutomationsList();
+    void getMasterList();
+    void parseJsonList(String jsonData);
     void setOTA();
     char toLowerCase(char c);
     void splitAutomations(const String &input, String &names, String &ids);
     String getIdByName(const String &input, const String &searchName);
     String convertToLowerAndUnderscore(String input);
     // void parseConditionToArray(const String &automationId, const JsonDocument &resp, JsonArray &automations);
-    String sendHttp(String output, String endpoint);
+    bool sendHttp(const String& output, const String& endpoint, String &result);
     String send(JsonDocument doc);
     JsonDocument parseString(String str);
     void handleWebServer();
@@ -150,6 +162,7 @@ private:
 
     // ORDER FIXED — matches Automata.cpp initializer list
     AttributeList attributeList;
+    MasterDataList masterDataList;
     WifiList wifiList;
     HandleAction _handleAction;
     HandleDelay _handleDelay;
@@ -169,7 +182,7 @@ private:
     String automations;
     String automationIds;
     String automationKeyIds;
-    bool isDeviceRegistered;
+    
     unsigned long previousMillis = millis();
     int d = 60000;
 #if ENABLE_SD_FILE_SERVER

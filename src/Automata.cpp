@@ -47,11 +47,12 @@ void Automata::configureWiFi()
     String jsonString;
     serializeJson(req, jsonString);
     // Try to fetch the latest Wi-Fi list
-    String res = sendHttp(jsonString, "wifiList");
-    Serial.print("wifi list ");
-    Serial.println(res);
-    if (res != "")
+    String res;
+
+    if (sendHttp(jsonString, "wifiList", res))
     {
+        Serial.print("wifi list ");
+        Serial.println(res);
         preferences.putString("wifiList", res);
     }
 
@@ -91,18 +92,19 @@ void Automata::configureWiFi()
 
 void Automata::begin()
 {
-    Serial.begin(115200);
+    // Serial.begin(115200);
     WiFi.mode(WIFI_STA);
     WiFi.config(INADDR_NONE, INADDR_NONE, INADDR_NONE, INADDR_NONE);
     WiFi.setHostname(convertToLowerAndUnderscore(deviceName).c_str());
     Serial.println(preferences.begin("my-app", false));
 
     // preferences.clear();
-    wifiMulti.addAP("JioFiber-x5hnq", "12341234");
-    wifiMulti.addAP("Airtel_Itsvergin", "touchmenot");
-    wifiMulti.addAP("wifi_NET", "444555666");
-    configureWiFi();
 
+    wifiMulti.addAP("LAN-D", "Jio@12345");
+    wifiMulti.addAP("Net2.4", "12345678");
+    wifiMulti.addAP("JioFiber-x5hnq", "12341234");
+    wifiMulti.addAP("wifi_NET", "444555666");
+    // wifiMulti.addAP("Automata", "12345678");
     macAddr = getMacAddress();
 
     getConfig();
@@ -111,10 +113,7 @@ void Automata::begin()
     //                         "keepWiFiAlive", 3096, this, 1, NULL, xPortGetCoreID());
 
     xTaskCreate([](void *params)
-                { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 3072, this, 2, NULL);
-
-    // ws();
-    // registerDevice();
+                { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 4096, this, 2, NULL);
 }
 
 void Automata::handleWebServer()
@@ -157,16 +156,74 @@ Preferences Automata::getPreferences()
     return preferences;
 }
 
+bool Automata::getMasterDeviceByName(const char *searchName, String &outId, String &outKey)
+{
+    for (auto item : masterDataList)
+    {
+        if (item.name.equals(searchName))
+        {
+            outId = item.id;
+            outKey = item.key0;
+            return true; // found
+        }
+    }
+    return false; // not found
+}
+void Automata::parseJsonList(String jsonData)
+{
+    StaticJsonDocument<1024> doc;
+    masterDataList.clear();
+
+    // Parse JSON
+    DeserializationError error = deserializeJson(doc, jsonData);
+    if (error)
+    {
+        Serial.print(F("deserializeJson() failed: "));
+        Serial.println(error.f_str());
+        return;
+    }
+
+    JsonArray arr = doc.as<JsonArray>();
+
+    for (JsonObject obj : arr)
+    {
+        MasterData md;
+        md.key0 = (const char *)obj["key"];
+        md.name = (const char *)obj["name"];
+        md.id = (const char *)obj["id"];
+        masterDataList.push_back(md);
+    }
+}
+MasterDataList Automata::getMasterDataList()
+{
+    getMasterList();
+    return masterDataList;
+}
+void Automata::getMasterList()
+{
+    JsonDocument req;
+    req["list"] = "get";
+    String jsonString;
+    serializeJson(req, jsonString);
+    String res;
+
+    if (sendHttp(jsonString, "masterList", res))
+    {
+        Serial.println(res);
+        parseJsonList(res);
+    }
+}
 void Automata::getAutomationsList()
 {
     JsonDocument req;
     req["list"] = "get";
     String jsonString;
     serializeJson(req, jsonString);
-    String res = sendHttp(jsonString, "automations");
-    Serial.println(res);
-    if (res != "")
+    String res;
+
+    if (sendHttp(jsonString, "automations", res))
     {
+        Serial.println(res);
         String names, ids;
         automationKeyIds = res;
         splitAutomations(res, names, ids);
@@ -275,6 +332,7 @@ String Automata::getMacAddress()
 }
 void Automata::keepWiFiAlive()
 {
+
     const TickType_t delayConnected = 30000 / portTICK_PERIOD_MS;   // 30s
     const TickType_t delayDisconnected = 5000 / portTICK_PERIOD_MS; // 5s
 
@@ -293,17 +351,16 @@ void Automata::keepWiFiAlive()
 
             if (wifiMulti.run() == WL_CONNECTED)
             {
-                Serial.println("WiFi connected!");
-                Serial.print("IP address: ");
+                Serial.printf("WiFi connected!");
+                Serial.printf("IP address: ");
                 Serial.println(WiFi.localIP());
                 vTaskDelay(pdMS_TO_TICKS(1000));
                 // Re-init services only when first connected
                 configTime(5.5 * 3600, 0, ntpServer);
-                setOTA();
-                ws();
                 registerDevice();
+                ws();
                 handleWebServer();
-
+                setOTA();
                 retryCount = 0;
                 wasConnected = true;
             }
@@ -312,24 +369,15 @@ void Automata::keepWiFiAlive()
                 retryCount++;
                 Serial.printf("WiFi reconnect failed (attempt %d)\n", retryCount);
 
-                // Exponential backoff
-                int waitTime = min(30000, (1 << retryCount) * 1000);
-                vTaskDelay(waitTime / portTICK_PERIOD_MS);
-
-                // Fallback: AP mode after many failures
-                if (retryCount > 10)
-                {
-                    Serial.println("Switching to fallback AP mode");
-                    // WiFi.mode(WIFI_AP);
-                    // WiFi.softAP("Automata_Fallback", "12345678");
-                    // Serial.print("AP IP address: ");
-                    // Serial.println(WiFi.softAPIP());
-                    retryCount = 0; // reset counter
-                }
+                vTaskDelay(delayDisconnected);
             }
         }
         else
         {
+            if (!webSocket.isConnected())
+            {
+                ws();
+            }
             vTaskDelay(delayConnected);
         }
     }
@@ -407,7 +455,7 @@ void Automata::loop()
         webSocket.loop();
 
         ArduinoOTA.handle();
-        // Serial.println(d);
+        // Serial.println(isDeviceRegistered);
 
         // Handle periodic tasks
         if (currentMillis - previousMillis >= getDelay())
@@ -515,14 +563,14 @@ void Automata::registerDevice()
     static uint8_t retryCount = 0;
     static unsigned long lastAttempt = 0;
 
-    if (isDeviceRegistered)
-        return;
+    // if (isDeviceRegistered)
+    //     return;
 
     unsigned long now = millis();
     unsigned long backoff = min(60000UL, (1UL << retryCount) * 1000); // max 60s
 
-    if (retryCount > 0 && now - lastAttempt < backoff)
-        return;
+    // if (retryCount > 0 && now - lastAttempt < backoff)
+    //     return;
 
     Serial.printf("Registering Device (attempt %d)...\n", retryCount + 1);
 
@@ -554,9 +602,9 @@ void Automata::registerDevice()
 
     String jsonString;
     serializeJson(doc, jsonString);
-    String res = sendHttp(jsonString, "register");
+    String res;
 
-    if (res != "")
+    if (sendHttp(jsonString, "register", res))
     {
         DynamicJsonDocument resp(1024);
         if (deserializeJson(resp, res) == DeserializationError::Ok)
@@ -565,8 +613,10 @@ void Automata::registerDevice()
             preferences.putString("deviceId", deviceId);
             isDeviceRegistered = true;
             retryCount = 0;
-            getAutomationsList();
             Serial.println("Device Registered");
+            vTaskDelay(200);
+            getAutomationsList();
+            getMasterList();
         }
     }
     else
@@ -583,104 +633,45 @@ void Automata::registerDevice()
     lastAttempt = now;
 }
 
-void Automata::registerDeviceOld()
+int maxRetries = 2;
+int retryDelayMs = 200;
+bool Automata::sendHttp(const String &output, const String &endpoint, String &result)
 {
-    static uint8_t retryCount = 0;
-    static unsigned long lastAttempt = 0;
 
-    if (isDeviceRegistered)
-        return;
+    HTTPClient http;
+    result = "";
 
-    unsigned long now = millis();
-
-    // Wait before retry
-    if (retryCount > 0 && now - lastAttempt < 5000)
-        return;
-
-    Serial.printf("Registering Device (attempt %d)...\n", retryCount + 1);
-
-    StaticJsonDocument<1024> doc; // Adjust size as needed
-    doc["name"] = deviceName;
-    doc["deviceId"] = deviceId;
-    doc["type"] = "sensor";
-    doc["updateInterval"] = d;
-    doc["status"] = "ONLINE";
-    doc["host"] = String(WiFi.getHostname());
-    doc["macAddr"] = macAddr;
-    doc["reboot"] = false;
-    doc["sleep"] = false;
-    doc["accessUrl"] = "http://" + WiFi.localIP().toString();
-
-    JsonArray attributes = doc.createNestedArray("attributes");
-    for (auto &attribute : attributeList)
-    {
-        JsonObject attr1 = attributes.createNestedObject();
-        attr1["value"] = "";
-        attr1["displayName"] = attribute.displayName;
-        attr1["key"] = attribute.key;
-        attr1["units"] = attribute.unit;
-        attr1["type"] = attribute.type;
-        attr1["extras"] = attribute.extras;
-        attr1["visible"] = true;
-        attr1["valueDataType"] = "String";
-    }
-
-    String jsonString;
-    serializeJson(doc, jsonString);
-
-    String res = sendHttp(jsonString, "register");
-
-    if (res != "")
-    {
-        JsonDocument resp;
-        deserializeJson(resp, res);
-        deviceId = resp["id"].as<String>();
-        preferences.putString("deviceId", deviceId);
-        isDeviceRegistered = true;
-        Serial.println("Device Registered");
-        Serial.println(res);
-        getAutomationsList();
-        retryCount = 0;
-    }
-    else
-    {
-        retryCount++;
-        if (retryCount >= 5)
-        {
-            Serial.println("Device registration failed after multiple attempts. Rebooting...");
-            // ESP.restart();
-        }
-    }
-
-    lastAttempt = now;
-}
-
-String Automata::sendHttp(String output, String endpoint)
-{
     http.begin("http://" + String(HOST) + ":" + String(PORT) + "/api/v1/main/" + endpoint);
     http.addHeader("Content-Type", "application/json");
+    http.setTimeout(5000); // 5 seconds per request
+
     int httpCode = http.POST(output);
 
     if (httpCode > 0)
     {
-        Serial.printf("[HTTP] GET... code: %d\n", httpCode);
+        Serial.printf("[HTTP] POST code: %d\n", httpCode);
 
-        if (httpCode == HTTP_CODE_OK)
+        result = http.getString(); // always capture response
+
+        if (httpCode >= 200 && httpCode < 300)
         {
-            String response = http.getString();
             http.end();
-            return response;
+            return true; // success, exit early
         }
         else
         {
-            return "";
+            Serial.printf("[HTTP] POST unexpected code: %d, body: %s\n",
+                          httpCode, result.c_str());
         }
     }
     else
     {
-        Serial.printf("[HTTP] GET... failed, error: %s\n", http.errorToString(httpCode).c_str());
+        Serial.printf("[HTTP] POST attempt failed, error: %s\n", http.errorToString(httpCode).c_str());
     }
-    return "";
+
+    http.end();
+
+    return false;
 }
 
 void Automata::ws()
@@ -697,7 +688,7 @@ void Automata::getConfig()
     String sv = preferences.getString("config", "");
     if (sv != "")
     {
-        isDeviceRegistered = true;
+        // isDeviceRegistered = true;
         Serial.println("Config");
         Serial.println(sv);
         JsonDocument resp;
