@@ -12,7 +12,7 @@
 #include <ESPmDNS.h>
 #include <ArduinoOTA.h>
 #include <vector>
-#include <ESPAsyncWebServer.h>
+// #include <ESPAsyncWebServer.h>
 #include <AsyncTCP.h>
 #include "esp_mac.h"
 // #define ENABLE_SD_FILE_SERVER 1
@@ -156,7 +156,7 @@ private:
     bool sendHttp(const String& output, const String& endpoint, String &result);
     String send(JsonDocument doc);
     JsonDocument parseString(String str);
-    void handleWebServer();
+   
 
     const char *ntpServer = "0.in.pool.ntp.org";
 
@@ -166,8 +166,8 @@ private:
     WifiList wifiList;
     HandleAction _handleAction;
     HandleDelay _handleDelay;
-    AsyncWebServer server;
-    AsyncEventSource events;
+    // AsyncWebServer server;
+    // AsyncEventSource events;
     WebSocketsClient webSocket;
     Stomp::StompClient stomper;
     WiFiMulti wifiMulti;

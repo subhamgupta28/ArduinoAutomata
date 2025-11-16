@@ -5,7 +5,7 @@ Automata *Automata::instance = nullptr;
 Automata::Automata(String deviceName, const char *HOST, int PORT)
     : deviceName(deviceName), HOST(HOST), PORT(PORT),
       stomper(webSocket, HOST, PORT, "/ws/", true),
-      _handleAction(nullptr), _handleDelay(nullptr), server(80), events("/events")
+      _handleAction(nullptr), _handleDelay(nullptr)
 {
     instance = this;
 }
@@ -113,44 +113,10 @@ void Automata::begin()
     //                         "keepWiFiAlive", 3096, this, 1, NULL, xPortGetCoreID());
 
     xTaskCreate([](void *params)
-                { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 4096, this, 2, NULL);
+                { static_cast<Automata *>(params)->keepWiFiAlive(); }, "keepWiFiAlive", 10240, this, 2, NULL);
 }
 
-void Automata::handleWebServer()
-{
-#if ENABLE_SD_FILE_SERVER
-    beginSDFileServer(&server);
-#endif
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest *request)
-              { request->send(200, "text/html", index_html); });
-    server.on("/restart", HTTP_GET, [](AsyncWebServerRequest *request)
-              { 
-            
-                ESP.restart();
-                request->send(200, "text/html", "ok"); });
-    events.onConnect([](AsyncEventSourceClient *client)
-                     {
-                         if (client->lastId())
-                         {
-                             Serial.printf("Client reconnected! Last message ID that it got is: %u\n", client->lastId());
-                         } });
-    server.addHandler(&events);
-    server.begin();
-}
-#if ENABLE_SD_FILE_SERVER
-void Automata::beginSDFileServer(AsyncWebServer *existingServer)
-{
-    if (existingServer)
-    {
-        sdweb = new SDWebServer(*existingServer); // share
-    }
-    else
-    {
-        sdweb = new SDWebServer(); // create internal
-    }
-    sdweb->begin();
-}
-#endif
+
 Preferences Automata::getPreferences()
 {
     return preferences;
@@ -332,54 +298,45 @@ String Automata::getMacAddress()
 }
 void Automata::keepWiFiAlive()
 {
-
-    const TickType_t delayConnected = 30000 / portTICK_PERIOD_MS;   // 30s
-    const TickType_t delayDisconnected = 5000 / portTICK_PERIOD_MS; // 5s
-
-    uint8_t retryCount = 0;
-    bool wasConnected = false;
+    const TickType_t delayConnected = 30000 / portTICK_PERIOD_MS;
+    const TickType_t delayDisconnected = 5000 / portTICK_PERIOD_MS;
 
     for (;;)
     {
         if (WiFi.status() != WL_CONNECTED)
         {
-            if (wasConnected)
-            {
-                Serial.println("WiFi disconnected. Retrying...");
-                wasConnected = false;
-            }
-
+            Serial.println("[Automata] WiFi not connected, trying...");
             if (wifiMulti.run() == WL_CONNECTED)
             {
-                Serial.printf("WiFi connected!");
-                Serial.printf("IP address: ");
-                Serial.println(WiFi.localIP());
-                vTaskDelay(pdMS_TO_TICKS(1000));
-                // Re-init services only when first connected
+                Serial.println("[Automata] WiFi connected");
                 configTime(5.5 * 3600, 0, ntpServer);
                 registerDevice();
-                ws();
-                handleWebServer();
+                Serial.printf("IP address: ");
+                Serial.println(WiFi.localIP());
+                if (!MDNS.begin(convertToLowerAndUnderscore(deviceName).c_str()))
+                {
+                    Serial.println("Error starting mDNS");
+                    return;
+                }
+
+                // Advertise a custom service
+                MDNS.addService("esp32", "tcp", 8080); // <--- your service
+                MDNS.addServiceTxt("esp32", "tcp", "deviceId", deviceId);
+                MDNS.addServiceTxt("esp32", "tcp", "ip", WiFi.localIP().toString());
+              
                 setOTA();
-                retryCount = 0;
-                wasConnected = true;
             }
             else
             {
-                retryCount++;
-                Serial.printf("WiFi reconnect failed (attempt %d)\n", retryCount);
-
+                Serial.println("[Automata] WiFi retry...");
                 vTaskDelay(delayDisconnected);
             }
         }
         else
         {
-            if (!webSocket.isConnected())
-            {
-                ws();
-            }
-            vTaskDelay(delayConnected);
+            loop();
         }
+        vTaskDelay(pdMS_TO_TICKS(10));
     }
 }
 
@@ -422,9 +379,9 @@ void Automata::keepWiFiAliveOld()
 
                 configTime(5.5 * 3600, 0, ntpServer);
                 setOTA();
-                ws();
+                // ws();
                 registerDevice();
-                handleWebServer();
+              
 
                 wasConnected = true;
             }
@@ -447,6 +404,7 @@ long regWait = 30000;
 
 void Automata::loop()
 {
+
     unsigned long currentMillis = millis();
 
     if (wifiMulti.run() == WL_CONNECTED)
@@ -515,7 +473,7 @@ void Automata::sendLive(JsonDocument data)
     // Stream live data to clients
     String json;
     serializeJson(data, json);
-    events.send(json.c_str(), "live", millis());
+   
 }
 
 void Automata::sendData(JsonDocument doc)
@@ -615,8 +573,9 @@ void Automata::registerDevice()
             retryCount = 0;
             Serial.println("Device Registered");
             vTaskDelay(200);
-            getAutomationsList();
-            getMasterList();
+            ws();
+            // getAutomationsList();
+            // getMasterList();
         }
     }
     else
@@ -637,42 +596,38 @@ int maxRetries = 2;
 int retryDelayMs = 200;
 bool Automata::sendHttp(const String &output, const String &endpoint, String &result)
 {
-
-    HTTPClient http;
+    static WiFiClientSecure client;
+    static HTTPClient http;
     result = "";
 
-    http.begin("http://" + String(HOST) + ":" + String(PORT) + "/api/v1/main/" + endpoint);
+    String url = "https://" + String(HOST) + "/api/v1/main/" + endpoint;
+    Serial.printf("[HTTP] Sending to: %s\n", url.c_str());
+    Serial.printf("[MEM] Free heap before: %u\n", ESP.getFreeHeap());
+
+    client.setInsecure();
+    // client.setBufferSizes(512, 512);
+
+    if (!http.begin(client, url)) {
+        Serial.println("[HTTP] http.begin() failed");
+        return false;
+    }
+
     http.addHeader("Content-Type", "application/json");
-    http.setTimeout(5000); // 5 seconds per request
+    http.setTimeout(10000);
 
     int httpCode = http.POST(output);
-
-    if (httpCode > 0)
-    {
-        Serial.printf("[HTTP] POST code: %d\n", httpCode);
-
-        result = http.getString(); // always capture response
-
-        if (httpCode >= 200 && httpCode < 300)
-        {
-            http.end();
-            return true; // success, exit early
-        }
-        else
-        {
-            Serial.printf("[HTTP] POST unexpected code: %d, body: %s\n",
-                          httpCode, result.c_str());
-        }
-    }
-    else
-    {
-        Serial.printf("[HTTP] POST attempt failed, error: %s\n", http.errorToString(httpCode).c_str());
+    if (httpCode > 0) {
+        result = http.getString();
+        Serial.printf("[HTTP] Code: %d, Result length: %u\n", httpCode, result.length());
+    } else {
+        Serial.printf("[HTTP] POST failed: %s\n", http.errorToString(httpCode).c_str());
     }
 
     http.end();
-
-    return false;
+    Serial.printf("[MEM] Free heap after: %u\n", ESP.getFreeHeap());
+    return (httpCode >= 200 && httpCode < 300);
 }
+
 
 void Automata::ws()
 {
@@ -680,7 +635,7 @@ void Automata::ws()
     stomper.onConnect(freeSubscribe);
     stomper.onError(freeError);
     Serial.println("ws connected");
-    stomper.begin();
+    stomper.beginSSL();
 }
 
 void Automata::getConfig()
